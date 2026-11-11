@@ -1,6 +1,8 @@
 """Bốn provider cùng một interface. Không chứa agent loop."""
 import json
 import os
+import re
+import time
 import urllib.error
 import urllib.request
 
@@ -12,16 +14,47 @@ CONFIG = {
 }
 
 
-def post_json(url, headers, payload):
-    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={'Content-Type': 'application/json', **headers})
+RETRY_STATUSES = {429, 500, 502, 503, 529}
+MAX_ATTEMPTS = int(os.getenv('PROVIDER_MAX_ATTEMPTS', '8'))
+
+
+def _retry_delay(exc, body, attempt):
+    """Số giây chờ trước khi gọi lại: ưu tiên Retry-After / 'try again in Xs', sau đó backoff."""
+    header = exc.headers.get('Retry-After') if exc.headers else None
     try:
-        with urllib.request.urlopen(req, timeout=60) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as exc:
-        # Do not print response bodies: they may contain account or request data.
-        raise RuntimeError(f'Provider trả HTTP {exc.code}; kiểm tra model, key và quota.') from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f'Không kết nối được provider: {exc.reason}') from exc
+        if header:
+            return min(60.0, float(header))
+    except ValueError:
+        pass
+    match = re.search(r'(?:try again|retry) in ([\d.]+)\s*(ms|s)', body, re.IGNORECASE)
+    if match:
+        value = float(match.group(1)) / (1000 if match.group(2).lower() == 'ms' else 1)
+        return min(60.0, value + 1)
+    return min(60.0, 2 ** attempt)
+
+
+def post_json(url, headers, payload):
+    data = json.dumps(payload).encode()
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json', **headers})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as exc:
+            body = ''
+            try:
+                body = exc.read().decode('utf-8', 'replace')
+            except Exception:
+                pass
+            # Hết tiền/quota ngày thì retry vô ích; chỉ retry rate limit tạm thời và lỗi server.
+            permanent = any(s in body for s in ('insufficient_quota', 'PerDay', 'per day'))
+            if exc.code in RETRY_STATUSES and not permanent and attempt < MAX_ATTEMPTS:
+                time.sleep(_retry_delay(exc, body, attempt))
+                continue
+            # Do not print response bodies: they may contain account or request data.
+            raise RuntimeError(f'Provider trả HTTP {exc.code}; kiểm tra model, key và quota.') from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f'Không kết nối được provider: {exc.reason}') from exc
 
 
 class Provider:

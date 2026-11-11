@@ -39,7 +39,7 @@ def main():
     parser.add_argument('--judge-provider', choices=choices, default=os.getenv('JUDGE_PROVIDER'))
     parser.add_argument('--judge-model', default=os.getenv('JUDGE_MODEL'))
     parser.add_argument('--bonus', action='store_true', help='Chạy bộ bonus riêng; không ảnh hưởng điểm chính')
-    parser.add_argument('--case', help='Ví dụ E2 hoặc H1; bỏ trống để chạy toàn bộ')
+    parser.add_argument('--case', help='Ví dụ E2, hoặc nhiều case: A1,A4,H1; bỏ trống để chạy toàn bộ')
     parser.add_argument('--max-steps', type=int, default=None, help='Giới hạn model calls mỗi case: mặc định 8, bonus 16')
     parser.add_argument('--workers', type=int, default=1, help='Số case chạy đồng thời (mặc định 1)')
     parser.add_argument('--output', default='eval_results.json')
@@ -53,7 +53,8 @@ def main():
         parser.error('--max-steps phải >= 1 và --workers phải từ 1 đến 8')
     cases_path = (Path(__file__).resolve().parents[1] / 'bonus' / 'cases.json') if args.bonus else (Path(__file__).parent / 'cases.json')
     cases = json.loads(cases_path.read_text())
-    selected = [c for c in cases if not args.case or c['id'] == args.case.upper()]
+    wanted = {x.strip().upper() for x in args.case.split(',')} if args.case else None
+    selected = [c for c in cases if not wanted or c['id'] in wanted]
     if not selected:
         parser.error('Không tìm thấy case')
     def run_and_print(case):
