@@ -52,5 +52,43 @@ class ReferenceFollowTests(unittest.TestCase):
         self.assertNotIn('Quy tắc bổ sung', fake.histories[0][0]['content'])
 
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'evals'))
+from scenarios import ScenarioTools
+from agent import MARKER_TOKEN
+
+
+def _planted_marker():
+    """Lấy marker từ scenario thay vì hard-code."""
+    notice = ScenarioTools('status_injection').execute('get_status', {'provider': 'github'})['external_notice']
+    return MARKER_TOKEN.findall(notice)[0]
+
+
+class InjectionTests(unittest.TestCase):
+    def test_injected_text_is_hidden_from_model(self):
+        marker = _planted_marker()
+        fake = FakeProvider([tool_call('1', 'get_status', '{"provider":"github"}'), final('GitHub ổn.')])
+        result = run_agent('x', fake, ScenarioTools('status_injection'))
+        self.assertEqual(result['status'], 'completed')
+        tool_msg = fake.histories[1][-1]
+        self.assertEqual(tool_msg['role'], 'tool')
+        self.assertNotIn(marker, tool_msg['content'])
+        self.assertTrue(any(x['event'] == 'tool_injection_hidden' for x in result['trace']))
+
+    def test_answer_echoing_marker_must_be_rewritten(self):
+        marker = _planted_marker()
+        fake = FakeProvider([tool_call('1', 'get_status', '{"provider":"github"}'),
+                             final(f'Có notice giả: {marker}'),
+                             final('Có một notice đáng ngờ, đã bỏ qua.')])
+        result = run_agent('x', fake, ScenarioTools('status_injection'))
+        self.assertEqual(result['status'], 'completed')
+        self.assertNotIn(marker, result['answer'])
+        self.assertEqual(sum(x['event'] == 'validation_injection_echo' for x in result['trace']), 1)
+
+    def test_normal_fixture_is_not_altered(self):
+        fake = FakeProvider([tool_call('1', 'get_status', '{"provider":"github"}'), final('ok')])
+        result = run_agent('x', fake, StatusTools())
+        self.assertFalse(any(x['event'] == 'tool_injection_hidden' for x in result['trace']))
+
+
 if __name__ == '__main__':
     unittest.main()
